@@ -882,6 +882,7 @@
             let highlightedNodes = new Set();
             let highlightedEdges = new Set();
             let isFiltering = false;
+            let renderFrameRequested = false;
 
             function createNetwork() {
                 console.log('[iframe] createNetwork starting...');
@@ -918,6 +919,7 @@
                 const dpr = window.devicePixelRatio || 1;
                 canvas.width = width * dpr;
                 canvas.height = height * dpr;
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
                 ctx.scale(dpr, dpr);
                 canvas.style.width = width + 'px';
                 canvas.style.height = height + 'px';
@@ -952,7 +954,7 @@
                         // Apply zoom only if not dragging a node
                         if (!isDraggingNode) {
                             transform = event.transform;
-                            render();
+                            scheduleRender();
                         }
                     })
                     .filter((event) => {
@@ -1112,16 +1114,14 @@
 
                 // Animation loop
                 simulation.on('tick', () => {
-                    // Avoid nodes to be re-rendered all time, just re-render when moving
-                    if (isDraggingNode) {
-                        render();
-                    }
+                    // 页面加载后自动展开：在模拟 tick 时触发重绘（用 rAF 节流，避免过高的重绘频率）
+                    scheduleRender();
                 });
 
                 // Handle window resize
                 window.addEventListener('resize', resizeCanvas);
 
-                render();
+                scheduleRender();
             }
 
             function resizeCanvas() {
@@ -1143,6 +1143,7 @@
                 const dpr = window.devicePixelRatio || 1;
                 canvas.width = width * dpr;
                 canvas.height = height * dpr;
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
                 ctx.scale(dpr, dpr);
                 canvas.style.width = width + 'px';
                 canvas.style.height = height + 'px';
@@ -1153,9 +1154,17 @@
                     simulation.alpha(0.3).restart();
                 }
 
-                render();
+                scheduleRender();
             }
 
+            function scheduleRender() {
+                if (renderFrameRequested) return;
+                renderFrameRequested = true;
+                requestAnimationFrame(() => {
+                    renderFrameRequested = false;
+                    render();
+                });
+            }
 
             function render() {
                 if (!ctx || !canvas) return;
