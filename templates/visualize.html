@@ -193,6 +193,72 @@
             width: 100%;
         }
 
+        .server-search {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 14px;
+            border-bottom: 1px solid #e2e8f0;
+            background: rgba(255, 255, 255, 0.9);
+        }
+
+        .server-search .search-wrapper {
+            flex: 1;
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .server-search input {
+            flex: 1;
+            padding: 10px 36px 10px 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            background: rgba(248, 250, 252, 0.9);
+        }
+
+        .server-search .clear-button {
+            position: absolute;
+            right: 8px;
+            width: 20px;
+            height: 20px;
+            border: none;
+            background: #cbd5e1;
+            border-radius: 50%;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            font-size: 14px;
+            color: #64748b;
+            transition: background 0.2s ease, color 0.2s ease;
+            z-index: 1;
+        }
+
+        .server-search .clear-button:hover {
+            background: #94a3b8;
+            color: #ffffff;
+        }
+
+        .server-search .clear-button.visible {
+            display: flex;
+        }
+
+        .server-search .clear-button::before {
+            content: '×';
+            font-weight: bold;
+            line-height: 1;
+        }
+
+        .server-search .status {
+            font-size: 0.85rem;
+            color: #64748b;
+            min-width: 110px;
+            text-align: right;
+        }
+
         .tab-bar {
             display: flex;
             gap: 8px;
@@ -264,11 +330,14 @@
             border-radius: 16px;
             border: 1px solid #e2e8f0;
             overflow: hidden;
+            position: relative;
+            display: flex;
+            flex-direction: column;
         }
 
         #networkCanvas {
             width: 100%;
-            height: 100%;
+            flex: 1 1 auto;
             background: #ffffff;
             border-radius: 16px;
         }
@@ -415,6 +484,10 @@
                 min-width: 100% !important;
                 min-height: 100% !important;
             }
+
+            .server-search {
+                padding: 10px 10px;
+            }
         }
     </style>
 </head>
@@ -426,11 +499,6 @@
             <h1>知识图谱浏览器</h1>
             <p>搜索、高亮并查看实体与关系，快速理解图谱结构与连接方式。</p>
             <div class="stats-grid" id="statsGrid"></div>
-            <div class="section">
-                <h2>搜索</h2>
-                <input id="searchInput" class="search-input" type="text" placeholder="搜索实体或关系" />
-                <div class="search-hint">匹配项将高亮显示。按 Esc 清空。</div>
-            </div>
             <div class="section" id="selectionSection">
                 <h2>选择</h2>
                 <div id="selectionDetails" class="selection-card">点击网络中的节点或关系以查看详情。</div>
@@ -457,6 +525,13 @@
             </div>
             <section id="network" class="tab-panel active">
                 <div class="network-panel">
+                    <div class="server-search">
+                        <div class="search-wrapper">
+                            <input id="searchInput" type="text" placeholder="搜索（服务端过滤，按 Enter 或停顿自动生效）" />
+                            <button id="clearSearchButton" class="clear-button" title="清空搜索"></button>
+                        </div>
+                        <div class="status" id="serverSearchStatus">就绪</div>
+                    </div>
                     <canvas id="networkCanvas"></canvas>
                 </div>
             </section>
@@ -514,26 +589,37 @@
                 sidebarDisabled: false
             };
 
-            const nodeById = Object.fromEntries(vizData.nodes.map(node => [node.id, node]));
-            const edgeById = Object.fromEntries(vizData.edges.map(edge => [edge.id, edge]));
-            const clusterById = Object.fromEntries(vizData.clusters.map(cluster => [cluster.id, cluster]));
-            const edgesByPredicate = {};
-            vizData.edges.forEach(edge => {
-                if (!edgesByPredicate[edge.predicate]) {
-                    edgesByPredicate[edge.predicate] = [];
-                }
-                edgesByPredicate[edge.predicate].push(edge.id);
-            });
+            let nodeById = {};
+            let edgeById = {};
+            let clusterById = {};
+            let edgesByPredicate = {};
+            let nodesByCluster = {};
 
-            const nodesByCluster = {};
-            vizData.clusters.forEach(cluster => {
-                cluster.members.forEach(member => {
-                    if (!nodesByCluster[cluster.id]) {
-                        nodesByCluster[cluster.id] = new Set();
+            function rebuildIndexes() {
+                nodeById = Object.fromEntries((vizData.nodes || []).map(node => [node.id, node]));
+                edgeById = Object.fromEntries((vizData.edges || []).map(edge => [edge.id, edge]));
+                clusterById = Object.fromEntries((vizData.clusters || []).map(cluster => [cluster.id, cluster]));
+
+                edgesByPredicate = {};
+                (vizData.edges || []).forEach(edge => {
+                    if (!edgesByPredicate[edge.predicate]) {
+                        edgesByPredicate[edge.predicate] = [];
                     }
-                    nodesByCluster[cluster.id].add(member);
+                    edgesByPredicate[edge.predicate].push(edge.id);
                 });
-            });
+
+                nodesByCluster = {};
+                (vizData.clusters || []).forEach(cluster => {
+                    cluster.members.forEach(member => {
+                        if (!nodesByCluster[cluster.id]) {
+                            nodesByCluster[cluster.id] = new Set();
+                        }
+                        nodesByCluster[cluster.id].add(member);
+                    });
+                });
+            }
+
+            rebuildIndexes();
 
             function renderStats() {
                 const grid = document.getElementById('statsGrid');
@@ -791,7 +877,7 @@
             }
 
             // Canvas-based network visualization
-            let canvas, ctx, transform, simulation;
+            let canvas, ctx, transform, simulation, zoomBehavior;
             let nodes, edges;
             let highlightedNodes = new Set();
             let highlightedEdges = new Set();
@@ -860,7 +946,7 @@
                     .force('collision', d3.forceCollide().radius(d => d.radius + 12));
 
                 // Set up zoom behavior with conditional activation
-                const zoom = d3.zoom()
+                zoomBehavior = d3.zoom()
                     .scaleExtent([0.25, 3])
                     .on('zoom', (event) => {
                         // Apply zoom only if not dragging a node
@@ -880,10 +966,10 @@
                         return true;
                     });
 
-                d3.select(canvas).call(zoom);
+                d3.select(canvas).call(zoomBehavior);
 
                 // Set initial zoom level
-                zoom.scaleTo(d3.select(canvas), 0.5);
+                zoomBehavior.scaleTo(d3.select(canvas), 0.5);
 
                 function getMousePos(event) {
                     const rect = canvas.getBoundingClientRect();
@@ -1251,6 +1337,65 @@
                     });
                 }
 
+                // Center search results if there are highlighted nodes
+                if (state.searchTerm && highlightedNodes.size > 0 && nodes && canvas) {
+                    // Calculate bounding box of highlighted nodes
+                    let minX = Infinity, maxX = -Infinity;
+                    let minY = Infinity, maxY = -Infinity;
+                    let hasValidNodes = false;
+
+                    highlightedNodes.forEach(nodeId => {
+                        const node = nodes.find(n => n.id === nodeId);
+                        if (node && node.x !== undefined && node.y !== undefined) {
+                            const radius = node.radius || 18;
+                            minX = Math.min(minX, node.x - radius);
+                            maxX = Math.max(maxX, node.x + radius);
+                            minY = Math.min(minY, node.y - radius);
+                            maxY = Math.max(maxY, node.y + radius);
+                            hasValidNodes = true;
+                        }
+                    });
+
+                    if (hasValidNodes) {
+                        const rect = canvas.getBoundingClientRect();
+                        const width = Math.max(rect.width, 320);
+                        const height = Math.max(rect.height, 200);
+
+                        // Calculate center of highlighted nodes
+                        const centerX = (minX + maxX) / 2;
+                        const centerY = (minY + maxY) / 2;
+
+                        // Calculate bounding box size
+                        const boxWidth = maxX - minX;
+                        const boxHeight = maxY - minY;
+                        const padding = 80; // Add padding around the bounding box
+
+                        // Calculate appropriate scale to fit the bounding box
+                        const scaleX = (width - padding * 2) / boxWidth;
+                        const scaleY = (height - padding * 2) / boxHeight;
+                        const scale = Math.min(scaleX, scaleY, 1.5); // Cap at 1.5x zoom
+                        const finalScale = Math.max(0.5, scale); // Don't zoom out too much
+
+                        // Calculate transform to center the bounding box
+                        const targetX = width / 2 - centerX * finalScale;
+                        const targetY = height / 2 - centerY * finalScale;
+
+                        // Apply transform smoothly
+                        if (zoomBehavior && d3) {
+                            d3.select(canvas).transition()
+                                .duration(750)
+                                .call(zoomBehavior.transform, d3.zoomIdentity
+                                    .translate(targetX, targetY)
+                                    .scale(finalScale));
+                        } else {
+                            // Fallback if zoomBehavior not available
+                            transform = d3.zoomIdentity
+                                .translate(targetX, targetY)
+                                .scale(finalScale);
+                        }
+                    }
+                }
+
                 // Trigger re-render with updated highlights
                 render();
             }
@@ -1328,6 +1473,174 @@
                 }
             }
 
+            let serverSearchAbortController = null;
+            let serverSearchDebounceTimer = null;
+            let serverSearchSeq = 0;
+
+            function setServerSearchStatus(text) {
+                const el = document.getElementById('serverSearchStatus');
+                if (el) el.textContent = text;
+            }
+
+            function updateClearButtonVisibility() {
+                const searchInput = document.getElementById('searchInput');
+                const clearButton = document.getElementById('clearSearchButton');
+                if (clearButton && searchInput) {
+                    if (searchInput.value.trim()) {
+                        clearButton.classList.add('visible');
+                    } else {
+                        clearButton.classList.remove('visible');
+                    }
+                }
+            }
+
+            function getVisualizeDataUrl(params) {
+                const basePath = window.location.pathname.replace(/\/visualize$/, '/visualize/data');
+                const qs = params.toString();
+                return basePath + (qs ? `?${qs}` : '');
+            }
+
+            function applyVizData(newData, searchTerm) {
+                vizData = newData || { nodes: [], edges: [], clusters: [], edgeClusters: [], stats: {}, relations: [] };
+                rebuildIndexes();
+
+                state.activeElement = null;
+                state.focusCluster = null;
+                state.focusPredicate = null;
+                state.searchTerm = searchTerm || '';
+
+                // Update search input and clear button visibility
+                const searchInput = document.getElementById('searchInput');
+                if (searchInput) {
+                    searchInput.value = searchTerm || '';
+                    updateClearButtonVisibility();
+                }
+
+                highlightedNodes.clear();
+                highlightedEdges.clear();
+                isFiltering = false;
+
+                renderStats();
+                renderTopLists();
+                renderClusters();
+
+                nodes = (vizData.nodes || []).map(node => ({ ...node }));
+                edges = (vizData.edges || []).map(edge => ({ ...edge }));
+
+                if (simulation) {
+                    simulation.nodes(nodes);
+                    const linkForce = simulation.force('link');
+                    if (linkForce && linkForce.links) {
+                        linkForce.links(edges);
+                    }
+                    simulation.alpha(1).restart();
+                }
+
+                // If there's a search term, wait for simulation to stabilize then center results
+                if (searchTerm && searchTerm.trim() && typeof d3 !== 'undefined' && canvas && zoomBehavior) {
+                    // Wait for simulation to run a bit before centering
+                    let ticks = 0;
+                    const maxTicks = 50;
+                    const checkAndCenter = () => {
+                        ticks++;
+                        if (nodes && nodes.length > 0 && nodes[0].x !== undefined) {
+                            // Calculate bounding box of all nodes (since they're search results)
+                            let minX = Infinity, maxX = -Infinity;
+                            let minY = Infinity, maxY = -Infinity;
+                            let hasValidNodes = false;
+
+                            nodes.forEach(node => {
+                                if (node && node.x !== undefined && node.y !== undefined) {
+                                    const radius = node.radius || 18;
+                                    minX = Math.min(minX, node.x - radius);
+                                    maxX = Math.max(maxX, node.x + radius);
+                                    minY = Math.min(minY, node.y - radius);
+                                    maxY = Math.max(maxY, node.y + radius);
+                                    hasValidNodes = true;
+                                }
+                            });
+
+                            if (hasValidNodes) {
+                                const rect = canvas.getBoundingClientRect();
+                                const width = Math.max(rect.width, 320);
+                                const height = Math.max(rect.height, 200);
+
+                                const centerX = (minX + maxX) / 2;
+                                const centerY = (minY + maxY) / 2;
+
+                                const boxWidth = maxX - minX;
+                                const boxHeight = maxY - minY;
+                                const padding = 80;
+
+                                const scaleX = (width - padding * 2) / boxWidth;
+                                const scaleY = (height - padding * 2) / boxHeight;
+                                const scale = Math.min(scaleX, scaleY, 1.5);
+                                const finalScale = Math.max(0.5, scale);
+
+                                const targetX = width / 2 - centerX * finalScale;
+                                const targetY = height / 2 - centerY * finalScale;
+
+                                d3.select(canvas).transition()
+                                    .duration(750)
+                                    .call(zoomBehavior.transform, d3.zoomIdentity
+                                        .translate(targetX, targetY)
+                                        .scale(finalScale));
+                                return true; // Centered, stop checking
+                            }
+                        }
+                        return false;
+                    };
+
+                    // Check periodically until centered or max ticks reached
+                    const interval = setInterval(() => {
+                        if (checkAndCenter() || ticks >= maxTicks) {
+                            clearInterval(interval);
+                        }
+                    }, 50);
+                } else if (typeof d3 !== 'undefined' && canvas && zoomBehavior) {
+                    // No search term, reset to default view
+                    d3.select(canvas).call(zoomBehavior.transform, d3.zoomIdentity.scale(0.5));
+                }
+
+                updateHighlights();
+            }
+
+            async function fetchVizData(searchTerm) {
+                const seq = ++serverSearchSeq;
+                if (serverSearchAbortController) {
+                    serverSearchAbortController.abort();
+                }
+                serverSearchAbortController = new AbortController();
+
+                const params = new URLSearchParams(window.location.search);
+                if (searchTerm && String(searchTerm).trim() !== '') {
+                    params.set('q', String(searchTerm).trim());
+                } else {
+                    params.delete('q');
+                }
+
+                const nextQuery = params.toString();
+                const nextUrl = window.location.pathname + (nextQuery ? `?${nextQuery}` : '');
+                window.history.replaceState(null, '', nextUrl);
+
+                setServerSearchStatus('加载中…');
+                try {
+                    const url = getVisualizeDataUrl(params);
+                    const resp = await fetch(url, { signal: serverSearchAbortController.signal });
+                    if (!resp.ok) {
+                        throw new Error(`HTTP ${resp.status}`);
+                    }
+                    const data = await resp.json();
+                    if (seq !== serverSearchSeq) return;
+                    applyVizData(data, searchTerm);
+                    setServerSearchStatus((data?.nodes?.length || 0) ? '已更新' : '无匹配');
+                } catch (e) {
+                    if (e && e.name === 'AbortError') return;
+                    console.error('fetch visualize data failed:', e);
+                    setServerSearchStatus('加载失败');
+                }
+            }
+
             function bindInteractions() {
                 document.querySelectorAll('.cluster-item').forEach(item => {
                     item.addEventListener('click', () => toggleClusterFocus(item.getAttribute('data-cluster')));
@@ -1349,8 +1662,29 @@
                 // });
 
                 const searchInput = document.getElementById('searchInput');
+                const clearButton = document.getElementById('clearSearchButton');
+
+                // Clear button click handler
+                if (clearButton) {
+                    clearButton.addEventListener('click', () => {
+                        searchInput.value = '';
+                        state.searchTerm = '';
+                        updateClearButtonVisibility();
+                        updateHighlights();
+                        fetchVizData('');
+                    });
+                }
+
+                const initialQ = new URLSearchParams(window.location.search).get('q') || '';
+                if (initialQ) {
+                    searchInput.value = initialQ;
+                    state.searchTerm = initialQ.trim();
+                }
+                updateClearButtonVisibility();
+
                 searchInput.addEventListener('input', () => {
                     state.searchTerm = searchInput.value.trim();
+                    updateClearButtonVisibility();
                     updateHighlights();
 
                     // Notify parent about search change
@@ -1360,12 +1694,23 @@
                             searchTerm: state.searchTerm
                         }, '*');
                     }
+
+                    if (serverSearchDebounceTimer) {
+                        clearTimeout(serverSearchDebounceTimer);
+                    }
+                    serverSearchDebounceTimer = setTimeout(() => {
+                        fetchVizData(state.searchTerm);
+                    }, 300);
                 });
                 searchInput.addEventListener('keydown', event => {
                     if (event.key === 'Escape') {
                         searchInput.value = '';
                         state.searchTerm = '';
+                        updateClearButtonVisibility();
                         updateHighlights();
+                        fetchVizData('');
+                    } else if (event.key === 'Enter') {
+                        fetchVizData(state.searchTerm);
                     }
                 });
 

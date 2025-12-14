@@ -72,3 +72,9 @@ server:
   title: "kg-gen-server"
   version: "0.1.0"
   cors_allow_origins: ["*"]
+  visualize:
+    default_limit_nodes: 2000
+    default_limit_edges: 4000
+    max_limit_nodes: 6000
+    max_limit_edges: 12000
+    max_depth: 6

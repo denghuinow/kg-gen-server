@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
 
 import yaml
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -874,6 +874,151 @@ def _build_view_model(graph: GraphView) -> Dict[str, Any]:
     }
 
 
+def _parse_csv_param(value: Optional[str]) -> List[str]:
+    if value is None:
+        return []
+    value = str(value).strip()
+    if not value:
+        return []
+    parts = [part.strip() for part in value.split(",")]
+    return [part for part in parts if part]
+
+
+def _cypher_str_list(values: List[str]) -> str:
+    escaped = [Neo4jStorage.format_value(item) for item in values if str(item).strip()]
+    return "[" + ", ".join(f'"{item}"' for item in escaped) + "]"
+
+
+@dataclass(frozen=True)
+class GraphViewFilters:
+    doc_ids: List[str]
+    entities: List[str]
+    predicates: List[str]
+    q: Optional[str]
+    center: Optional[str]
+    depth: int
+    limit_nodes: int
+    limit_edges: int
+
+
+def _load_graph_view_filtered(storage: Neo4jStorage, graph_name: str, filters: GraphViewFilters) -> GraphView:
+    escaped_graph_name = Neo4jStorage.format_value(graph_name)
+
+    doc_id_clause_node = ""
+    doc_id_clause_rel = ""
+    doc_id_clause_path_rel = ""
+    if filters.doc_ids:
+        doc_list = _cypher_str_list(filters.doc_ids)
+        doc_id_clause_node = f" AND ANY(d IN COALESCE(n.doc_id, []) WHERE d IN {doc_list})"
+        doc_id_clause_rel = f" AND ANY(d IN COALESCE(r.doc_id, []) WHERE d IN {doc_list})"
+        doc_id_clause_path_rel = f" AND ANY(d IN COALESCE(rel.doc_id, []) WHERE d IN {doc_list})"
+
+    entities_clause_node = ""
+    entities_clause_rel = ""
+    if filters.entities:
+        entity_list = _cypher_str_list(filters.entities)
+        entities_clause_node = f" AND n.name IN {entity_list}"
+        entities_clause_rel = f" AND s.name IN {entity_list} AND o.name IN {entity_list}"
+
+    predicates_clause_rel = ""
+    predicates_clause_path_rel = ""
+    if filters.predicates:
+        predicate_list = _cypher_str_list(filters.predicates)
+        predicates_clause_rel = f" AND r.predicate IN {predicate_list}"
+        predicates_clause_path_rel = f" AND rel.predicate IN {predicate_list}"
+
+    q_clause_node = ""
+    q_clause_rel = ""
+    if filters.q:
+        escaped_q = Neo4jStorage.format_value(filters.q)
+        q_clause_node = f' AND toLower(n.name) CONTAINS toLower("{escaped_q}")'
+        q_clause_rel = (
+            f' AND (toLower(s.name) CONTAINS toLower("{escaped_q}") '
+            f'OR toLower(o.name) CONTAINS toLower("{escaped_q}") '
+            f'OR toLower(r.predicate) CONTAINS toLower("{escaped_q}"))'
+        )
+
+    relations: set[Tuple[str, str, str]] = set()
+    entities: set[str] = set()
+
+    def _add_relation(subject: Any, predicate: Any, obj: Any) -> None:
+        if not (subject and predicate and obj):
+            return
+        subject_s = str(subject)
+        predicate_s = str(predicate)
+        obj_s = str(obj)
+        if not (subject_s and predicate_s and obj_s):
+            return
+        relations.add((subject_s, predicate_s, obj_s))
+        entities.add(subject_s)
+        entities.add(obj_s)
+
+    if filters.center:
+        center_escaped = Neo4jStorage.format_value(filters.center)
+        depth = max(0, int(filters.depth))
+        if depth > 0:
+            rel_query = (
+                f'MATCH (c {{graph_name: "{escaped_graph_name}", name: "{center_escaped}"}}) '
+                f'MATCH p=(c)-[*1..{depth}]-(n) '
+                f'WHERE ALL(node IN nodes(p) WHERE node.graph_name = "{escaped_graph_name}") '
+                f'AND ALL(rel IN relationships(p) WHERE rel.graph_name = "{escaped_graph_name}"'
+                f"{doc_id_clause_path_rel}{predicates_clause_path_rel}"
+                ") "
+                "WITH DISTINCT relationships(p) AS rels "
+                "UNWIND rels AS r "
+                "WITH DISTINCT r "
+                "MATCH (s)-[r]->(o) "
+                f'WHERE s.graph_name = "{escaped_graph_name}" AND o.graph_name = "{escaped_graph_name}"'
+                f"{entities_clause_rel}{q_clause_rel}"
+                " RETURN DISTINCT s.name AS subject, r.predicate AS predicate, o.name AS object "
+                f"LIMIT {int(filters.limit_edges)}"
+            )
+            for record in storage.run_query_with_result(rel_query):
+                _add_relation(record.get("subject"), record.get("predicate"), record.get("object"))
+
+        node_query = (
+            f'MATCH (c {{graph_name: "{escaped_graph_name}", name: "{center_escaped}"}}) '
+            f'MATCH p=(c)-[*0..{depth}]-(n) '
+            f'WHERE ALL(node IN nodes(p) WHERE node.graph_name = "{escaped_graph_name}") '
+            f'AND ALL(rel IN relationships(p) WHERE rel.graph_name = "{escaped_graph_name}"'
+            f"{doc_id_clause_path_rel}{predicates_clause_path_rel}"
+            ") "
+            "WITH DISTINCT n "
+            f'WHERE n.graph_name = "{escaped_graph_name}"'
+            f"{doc_id_clause_node}{entities_clause_node}{q_clause_node}"
+            " RETURN DISTINCT n.name AS name "
+            f"LIMIT {int(filters.limit_nodes)}"
+        )
+        for record in storage.run_query_with_result(node_query):
+            name = record.get("name")
+            if name:
+                entities.add(str(name))
+        entities.add(filters.center)
+    else:
+        rel_query = (
+            f'MATCH (s {{graph_name: "{escaped_graph_name}"}})-[r {{graph_name: "{escaped_graph_name}"}}]->'
+            f'(o {{graph_name: "{escaped_graph_name}"}}) '
+            f'WHERE 1=1{doc_id_clause_rel}{predicates_clause_rel}{entities_clause_rel}{q_clause_rel} '
+            "RETURN DISTINCT s.name AS subject, r.predicate AS predicate, o.name AS object "
+            f"LIMIT {int(filters.limit_edges)}"
+        )
+        for record in storage.run_query_with_result(rel_query):
+            _add_relation(record.get("subject"), record.get("predicate"), record.get("object"))
+
+        node_query = (
+            f'MATCH (n {{graph_name: "{escaped_graph_name}"}}) '
+            f'WHERE 1=1{doc_id_clause_node}{entities_clause_node}{q_clause_node} '
+            "RETURN DISTINCT n.name AS name "
+            f"LIMIT {int(filters.limit_nodes)}"
+        )
+        for record in storage.run_query_with_result(node_query):
+            name = record.get("name")
+            if name:
+                entities.add(str(name))
+
+    return GraphView(entities=set(str(e) for e in entities if e), relations=relations)
+
+
 def _load_graph_view(storage: Neo4jStorage, graph_name: str) -> GraphView:
     escaped = Neo4jStorage.format_value(graph_name)
     node_query = f'MATCH (n {{graph_name: "{escaped}"}}) RETURN DISTINCT n.name AS name'
@@ -911,6 +1056,64 @@ class ServerResources:
 
 _resources: Optional[ServerResources] = None
 _resources_lock = asyncio.Lock()
+
+
+def _get_visualize_view_model(
+    resources: ServerResources,
+    graph_name: str,
+    doc_id: Optional[str],
+    entities: Optional[str],
+    predicates: Optional[str],
+    q: Optional[str],
+    center: Optional[str],
+    depth: int,
+    limit_nodes: Optional[int],
+    limit_edges: Optional[int],
+) -> Tuple[Dict[str, Any], bool]:
+    server_cfg = resources.config.get("server", {}) or {}
+    viz_cfg = server_cfg.get("visualize", {}) or {}
+    max_depth = int(viz_cfg.get("max_depth", 6))
+    max_limit_nodes = int(viz_cfg.get("max_limit_nodes", 6000))
+    max_limit_edges = int(viz_cfg.get("max_limit_edges", 12000))
+    default_limit_nodes = int(viz_cfg.get("default_limit_nodes", min(2000, max_limit_nodes)))
+    default_limit_edges = int(viz_cfg.get("default_limit_edges", min(4000, max_limit_edges)))
+
+    if depth > max_depth:
+        raise HTTPException(status_code=400, detail=f"depth 超出上限：{depth} > {max_depth}")
+
+    limit_nodes_final = default_limit_nodes if limit_nodes is None else int(limit_nodes)
+    limit_edges_final = default_limit_edges if limit_edges is None else int(limit_edges)
+    limit_nodes_final = min(limit_nodes_final, max_limit_nodes)
+    limit_edges_final = min(limit_edges_final, max_limit_edges)
+
+    doc_ids_list = _parse_csv_param(doc_id)
+    entities_list = _parse_csv_param(entities)
+    predicates_list = _parse_csv_param(predicates)
+    q_value = str(q).strip() if q is not None and str(q).strip() else None
+    center_value = str(center).strip() if center is not None and str(center).strip() else None
+
+    has_filters = any([doc_ids_list, entities_list, predicates_list, q_value, center_value]) or (
+        limit_nodes is not None or limit_edges is not None
+    )
+    if has_filters:
+        graph = _load_graph_view_filtered(
+            resources.storage,
+            graph_name,
+            GraphViewFilters(
+                doc_ids=doc_ids_list,
+                entities=entities_list,
+                predicates=predicates_list,
+                q=q_value,
+                center=center_value,
+                depth=depth,
+                limit_nodes=limit_nodes_final,
+                limit_edges=limit_edges_final,
+            ),
+        )
+    else:
+        graph = _load_graph_view(resources.storage, graph_name)
+
+    return _build_view_model(graph), has_filters
 
 
 def _get_config_path() -> Path:
@@ -1123,16 +1326,36 @@ async def api_graph_stats(graph_name: str) -> JSONResponse:
 
 
 @app.get("/api/graphs/{graph_name}/visualize", response_class=HTMLResponse)
-async def api_visualize_graph(graph_name: str) -> HTMLResponse:
+async def api_visualize_graph(
+    graph_name: str,
+    doc_id: Optional[str] = Query(None, description="按 doc_id 过滤（逗号分隔，任一命中即保留）"),
+    entities: Optional[str] = Query(None, description="实体名白名单（逗号分隔）"),
+    predicates: Optional[str] = Query(None, description="谓词白名单（逗号分隔）"),
+    q: Optional[str] = Query(None, description="关键字模糊匹配（实体名或谓词）"),
+    center: Optional[str] = Query(None, description="中心实体名（配合 depth）"),
+    depth: int = Query(1, ge=0, description="center 模式下的跳数"),
+    limit_nodes: Optional[int] = Query(None, ge=1, description="节点返回上限（兜底保护）"),
+    limit_edges: Optional[int] = Query(None, ge=0, description="边返回上限（兜底保护）"),
+) -> HTMLResponse:
     resources = await get_resources()
     if not graph_exists(resources.storage, graph_name):
         raise HTTPException(status_code=404, detail=f"图谱不存在: {graph_name}")
 
-    graph = _load_graph_view(resources.storage, graph_name)
-    if not graph.entities:
+    view_model, has_filters = _get_visualize_view_model(
+        resources,
+        graph_name=graph_name,
+        doc_id=doc_id,
+        entities=entities,
+        predicates=predicates,
+        q=q,
+        center=center,
+        depth=depth,
+        limit_nodes=limit_nodes,
+        limit_edges=limit_edges,
+    )
+    if not view_model.get("nodes") and not has_filters:
         raise HTTPException(status_code=404, detail=f"图谱为空或无法加载: {graph_name}")
 
-    view_model = _build_view_model(graph)
     template = VISUALIZE_TEMPLATE_PATH.read_text(encoding="utf-8")
     html = template.replace("<!--DATA-->", json.dumps(view_model, ensure_ascii=False, indent=2))
     html = html.replace(
@@ -1140,6 +1363,37 @@ async def api_visualize_graph(graph_name: str) -> HTMLResponse:
         "display: block; /* Visible in standalone/iframe mode */",
     )
     return HTMLResponse(content=html)
+
+
+@app.get("/api/graphs/{graph_name}/visualize/data")
+async def api_visualize_graph_data(
+    graph_name: str,
+    doc_id: Optional[str] = Query(None, description="按 doc_id 过滤（逗号分隔，任一命中即保留）"),
+    entities: Optional[str] = Query(None, description="实体名白名单（逗号分隔）"),
+    predicates: Optional[str] = Query(None, description="谓词白名单（逗号分隔）"),
+    q: Optional[str] = Query(None, description="关键字模糊匹配（实体名或谓词）"),
+    center: Optional[str] = Query(None, description="中心实体名（配合 depth）"),
+    depth: int = Query(1, ge=0, description="center 模式下的跳数"),
+    limit_nodes: Optional[int] = Query(None, ge=1, description="节点返回上限（兜底保护）"),
+    limit_edges: Optional[int] = Query(None, ge=0, description="边返回上限（兜底保护）"),
+) -> JSONResponse:
+    resources = await get_resources()
+    if not graph_exists(resources.storage, graph_name):
+        raise HTTPException(status_code=404, detail=f"图谱不存在: {graph_name}")
+
+    view_model, _ = _get_visualize_view_model(
+        resources,
+        graph_name=graph_name,
+        doc_id=doc_id,
+        entities=entities,
+        predicates=predicates,
+        q=q,
+        center=center,
+        depth=depth,
+        limit_nodes=limit_nodes,
+        limit_edges=limit_edges,
+    )
+    return JSONResponse(content=view_model)
 
 
 @app.delete("/api/graphs/{graph_name}", response_model=DeleteGraphResponse)
