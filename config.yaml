@@ -9,6 +9,9 @@ llm:
   api_key: "sk-qPCtivhoJmQj91fsGEljHybU9Ua2Tor3AaCnk5WHS3m810KY"
   api_base_url: "https://oneapi.wchat.cc/v1"
   model: "qwen3-235b-a22b-instruct-2507"
+  model: "Qwen/Qwen3-30B-A3B-Instruct-2507"
+  # 最大token数
+  max_tokens: 8192
   temperature: 0
   max_retries: 2
 
@@ -41,8 +44,8 @@ text:
     include_delim: prev
 
 atom:
-  ent_threshold: 0.91
-  rel_threshold: 0.95
+  ent_threshold: 0.9
+  rel_threshold: 0.9
   entity_name_weight: 0.8
   entity_label_weight: 0.2
   max_workers: 8

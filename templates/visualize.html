@@ -161,27 +161,27 @@
             font-weight: 600;
         }
 
-        .cluster-item,
-        .relation-item {
+        .relation-item,
+        .entity-item {
             border-left: 4px solid transparent;
             text-align: left;
             cursor: pointer;
             transition: background 0.2s ease, transform 0.2s ease;
         }
 
-        .cluster-item:hover,
-        .relation-item:hover {
+        .relation-item:hover,
+        .entity-item:hover {
             background: #e2e8f0;
         }
 
-        .cluster-item.active,
-        .relation-item.active {
+        .relation-item.active,
+        .entity-item.active {
             transform: translateX(4px);
             background: #e2e8f0;
         }
 
-        .cluster-item .meta,
-        .relation-item .meta {
+        .relation-item .meta,
+        .entity-item .meta {
             font-size: 0.8rem;
             color: #475569;
         }
@@ -500,12 +500,8 @@
             <p>搜索、高亮并查看实体与关系，快速理解图谱结构与连接方式。</p>
             <div class="stats-grid" id="statsGrid"></div>
             <div class="section" id="selectionSection">
-                <h2>选择</h2>
+                <h2>属性信息</h2>
                 <div id="selectionDetails" class="selection-card">点击网络中的节点或关系以查看详情。</div>
-            </div>
-            <div class="section">
-                <h2>实体簇</h2>
-                <div id="clusterList" class="list"></div>
             </div>
             <div class="section">
                 <h2>高频实体</h2>
@@ -582,7 +578,6 @@
 
             const state = {
                 activeElement: null,
-                focusCluster: null,
                 focusPredicate: null,
                 searchTerm: '',
                 sidebarCollapsed: false,
@@ -591,14 +586,11 @@
 
             let nodeById = {};
             let edgeById = {};
-            let clusterById = {};
             let edgesByPredicate = {};
-            let nodesByCluster = {};
 
             function rebuildIndexes() {
                 nodeById = Object.fromEntries((vizData.nodes || []).map(node => [node.id, node]));
                 edgeById = Object.fromEntries((vizData.edges || []).map(edge => [edge.id, edge]));
-                clusterById = Object.fromEntries((vizData.clusters || []).map(cluster => [cluster.id, cluster]));
 
                 edgesByPredicate = {};
                 (vizData.edges || []).forEach(edge => {
@@ -606,16 +598,6 @@
                         edgesByPredicate[edge.predicate] = [];
                     }
                     edgesByPredicate[edge.predicate].push(edge.id);
-                });
-
-                nodesByCluster = {};
-                (vizData.clusters || []).forEach(cluster => {
-                    cluster.members.forEach(member => {
-                        if (!nodesByCluster[cluster.id]) {
-                            nodesByCluster[cluster.id] = new Set();
-                        }
-                        nodesByCluster[cluster.id].add(member);
-                    });
                 });
             }
 
@@ -628,8 +610,6 @@
                     { label: '实体', value: stats.entities },
                     { label: '关系', value: stats.relations },
                     { label: '关系类型', value: stats.relationTypes },
-                    { label: '实体簇', value: stats.entityClusters },
-                    { label: '关系簇', value: stats.edgeClusters },
                     { label: '孤立实体', value: stats.isolatedEntities },
                     { label: '连通分量', value: stats.components },
                     { label: '平均度', value: stats.averageDegree }
@@ -649,14 +629,12 @@
                 const topRelationsContainer = document.getElementById('topRelations');
 
                 const entityItems = vizData.topEntities.map(item => {
-                    const clusterLabel = item.cluster ? `${item.cluster}` : '未分簇';
                     return `
-                        <div class="list-item">
+                        <div class="list-item entity-item" data-id="${item.label}">
                             <div>
                                 <strong>${item.label}</strong>
-                                <div class="meta">簇：${clusterLabel}</div>
                             </div>
-                            <div>${item.degree}</div>
+                            <div class="pill">${item.degree}</div>
                         </div>
                     `;
                 });
@@ -674,24 +652,6 @@
                 topRelationsContainer.innerHTML = relationItems.join('') || '<div class="meta">暂无关系</div>';
             }
 
-            function renderClusters() {
-                const container = document.getElementById('clusterList');
-                if (!vizData.clusters.length) {
-                    container.innerHTML = '<div class="meta">未提供簇信息。</div>';
-                    return;
-                }
-                container.innerHTML = vizData.clusters
-                    .map(cluster => `
-                        <button class="list-item cluster-item" data-cluster="${cluster.id}" style="border-left-color: ${cluster.color};">
-                            <div>
-                                <strong>${cluster.label}</strong>
-                                <div class="meta">${cluster.size} 个成员</div>
-                            </div>
-                            <span class="legend-swatch" style="background: ${cluster.color};"></span>
-                        </button>
-                    `)
-                    .join('');
-            }
 
             // function renderRelationsTable() {
             //     const tbody = document.getElementById('relationsTable');
@@ -755,6 +715,7 @@
             function setActiveElement(element) {
                 state.activeElement = element;
                 renderSelectionDetails();
+                updateActiveButtons();
                 updateHighlights();
 
                 // Notify parent about selection change
@@ -778,7 +739,6 @@
                     const node = nodeById[element.id];
                     return {
                         label: node.label,
-                        cluster: node.cluster,
                         degree: node.degree,
                         indegree: node.indegree,
                         outdegree: node.outdegree,
@@ -789,8 +749,7 @@
                     return {
                         source: edge.source,
                         target: edge.target,
-                        predicate: edge.predicate,
-                        cluster: edge.cluster
+                        predicate: edge.predicate
                     };
                 }
                 return {};
@@ -799,6 +758,7 @@
             function clearActiveElement() {
                 state.activeElement = null;
                 renderSelectionDetails();
+                updateActiveButtons();
                 updateHighlights();
             }
 
@@ -812,12 +772,10 @@
 
                 if (active.type === 'node') {
                     const node = nodeById[active.id];
-                    const cluster = node.cluster ? `簇：${node.cluster}` : '未分簇';
                     const neighbors = node.neighbors.length ? node.neighbors.join(', ') : '无';
                     panel.innerHTML = `
                         <h3>${node.label}</h3>
                         <ul>
-                            <li>${cluster}</li>
                             <li>总度：${node.degree}</li>
                             <li>出度：${node.outdegree}</li>
                             <li>入度：${node.indegree}</li>
@@ -826,26 +784,15 @@
                     `;
                 } else if (active.type === 'edge') {
                     const edge = edgeById[active.id];
-                    const cluster = edge.cluster ? `簇：${edge.cluster}` : '未分簇';
                     panel.innerHTML = `
                         <h3>${edge.source} → ${edge.target}</h3>
                         <ul>
                             <li>关系：${edge.predicate}</li>
-                            <li>${cluster}</li>
                         </ul>
                     `;
                 }
             }
 
-            function toggleClusterFocus(clusterId) {
-                if (state.focusCluster === clusterId) {
-                    state.focusCluster = null;
-                } else {
-                    state.focusCluster = clusterId;
-                }
-                updateActiveButtons();
-                updateHighlights();
-            }
 
             function togglePredicateFocus(predicate) {
                 if (state.focusPredicate === predicate) {
@@ -866,13 +813,13 @@
             }
 
             function updateActiveButtons() {
-                document.querySelectorAll('.cluster-item').forEach(item => {
-                    const clusterId = item.getAttribute('data-cluster');
-                    item.classList.toggle('active', state.focusCluster === clusterId);
-                });
                 document.querySelectorAll('.relation-item').forEach(item => {
                     const predicate = item.getAttribute('data-predicate');
                     item.classList.toggle('active', state.focusPredicate === predicate);
+                });
+                document.querySelectorAll('.entity-item').forEach(item => {
+                    const entityId = item.getAttribute('data-id');
+                    item.classList.toggle('active', state.activeElement?.type === 'node' && state.activeElement?.id === entityId);
                 });
             }
 
@@ -1207,7 +1154,7 @@
                     // Draw edge line
                     ctx.strokeStyle = edge.color;
                     ctx.globalAlpha = isDimmed ? 0.15 : (isHighlighted ? 1.0 : 0.55);
-                    ctx.lineWidth = 1.4;
+                    ctx.lineWidth = isHighlighted ? 3.0 : 1.4;
                     ctx.beginPath();
                     ctx.moveTo(sourceX, sourceY);
                     ctx.lineTo(targetX, targetY);
@@ -1256,8 +1203,8 @@
                     ctx.fill();
 
                     // Draw node border
-                    ctx.strokeStyle = '#0f172a';
-                    ctx.lineWidth = isHighlighted ? 2.4 : 1.2;
+                    ctx.strokeStyle = isHighlighted ? '#1d4ed8' : '#0f172a';
+                    ctx.lineWidth = isHighlighted ? 3.0 : 1.2;
                     ctx.stroke();
 
                     // Draw node label
@@ -1303,19 +1250,6 @@
                         addNode(edge.source);
                         addNode(edge.target);
                     }
-                }
-
-                if (state.focusCluster && nodesByCluster[state.focusCluster]) {
-                    isFiltering = true;
-                    nodesByCluster[state.focusCluster].forEach(addNode);
-                    vizData.edges.forEach(edge => {
-                        if (
-                            nodesByCluster[state.focusCluster].has(edge.source) &&
-                            nodesByCluster[state.focusCluster].has(edge.target)
-                        ) {
-                            addEdge(edge.id);
-                        }
-                    });
                 }
 
                 if (state.focusPredicate && edgesByPredicate[state.focusPredicate]) {
@@ -1510,11 +1444,10 @@
             }
 
             function applyVizData(newData, searchTerm) {
-                vizData = newData || { nodes: [], edges: [], clusters: [], edgeClusters: [], stats: {}, relations: [] };
+                vizData = newData || { nodes: [], edges: [], stats: {}, relations: [] };
                 rebuildIndexes();
 
                 state.activeElement = null;
-                state.focusCluster = null;
                 state.focusPredicate = null;
                 state.searchTerm = searchTerm || '';
 
@@ -1531,7 +1464,6 @@
 
                 renderStats();
                 renderTopLists();
-                renderClusters();
 
                 nodes = (vizData.nodes || []).map(node => ({ ...node }));
                 edges = (vizData.edges || []).map(edge => ({ ...edge }));
@@ -1651,13 +1583,25 @@
             }
 
             function bindInteractions() {
-                document.querySelectorAll('.cluster-item').forEach(item => {
-                    item.addEventListener('click', () => toggleClusterFocus(item.getAttribute('data-cluster')));
-                });
+                const topRelationsContainer = document.getElementById('topRelations');
+                if (topRelationsContainer) {
+                    topRelationsContainer.addEventListener('click', (event) => {
+                        const target = event.target.closest('.relation-item');
+                        if (!target) return;
+                        const predicate = target.getAttribute('data-predicate');
+                        if (predicate) togglePredicateFocus(predicate);
+                    });
+                }
 
-                document.querySelectorAll('.relation-item').forEach(item => {
-                    item.addEventListener('click', () => togglePredicateFocus(item.getAttribute('data-predicate')));
-                });
+                const topEntitiesContainer = document.getElementById('topEntities');
+                if (topEntitiesContainer) {
+                    topEntitiesContainer.addEventListener('click', (event) => {
+                        const target = event.target.closest('.entity-item');
+                        if (!target) return;
+                        const entityId = target.getAttribute('data-id');
+                        if (entityId) toggleEntityFocus(entityId);
+                    });
+                }
 
                 // document.getElementById('relationsTable').addEventListener('click', event => {
                 //     const row = event.target.closest('tr');
@@ -1744,8 +1688,6 @@
                     } else if (event.data.type === 'search') {
                         state.searchTerm = event.data.term || '';
                         updateHighlights();
-                    } else if (event.data.type === 'focusCluster') {
-                        toggleClusterFocus(event.data.clusterId);
                     } else if (event.data.type === 'focusPredicate') {
                         togglePredicateFocus(event.data.predicate);
                     } else if (event.data.type === 'focusEntity') {
@@ -1757,7 +1699,6 @@
 
             renderStats();
             renderTopLists();
-            renderClusters();
             // renderRelationsTable();
             // renderInsights();
 
