@@ -1,0 +1,8 @@
+# kg-gen-server 独立依赖（建议使用 uv 安装）
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+jinja2>=3.1.0,<4.0.0
+pyyaml>=6.0.0,<7.0.0
+
+# 以可编辑方式引用本仓库内的依赖模块
+-e ../itext2kg

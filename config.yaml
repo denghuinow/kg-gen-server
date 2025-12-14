@@ -1,0 +1,74 @@
+# kg-gen-server 配置模板（YAML）
+#
+# 建议将敏感信息（API Key、Neo4j 密码）放到环境变量中，然后在此处通过 *_env 引用。
+
+llm:
+  provider: openai
+  # 二选一：api_key 或 api_key_env
+  # api_key_env: LLM_API_KEY
+  api_key: "sk-qPCtivhoJmQj91fsGEljHybU9Ua2Tor3AaCnk5WHS3m810KY"
+  api_base_url: "https://oneapi.wchat.cc/v1"
+  model: "qwen3-235b-a22b-instruct-2507"
+  temperature: 0
+  max_retries: 2
+
+embeddings:
+  # 二选一：api_key 或 api_key_env
+  # api_key_env: EMBEDDINGS_API_KEY
+  api_key: "sk-qPCtivhoJmQj91fsGEljHybU9Ua2Tor3AaCnk5WHS3m810KY"
+  api_base_url: "https://oneapi.wchat.cc/v1"
+  model: "Qwen/Qwen3-Embedding-8B"
+
+neo4j:
+  uri: "neo4j://172.16.15.249:7687"
+  username: "neo4j"
+  # password_env: NEO4J_PASSWORD
+  password: "password"
+  database: "neo4j"
+
+text:
+  chunker:
+    type: chonkie_fastapi
+    # 需要指向 chonkie-fastapi 的 SentenceChunker 接口
+    url: "http://127.0.0.1:8011/SentenceChunker"
+    timeout_s: 60
+    chunk_size: 512
+    chunk_overlap: 20
+    min_sentences_per_chunk: 1
+    min_characters_per_sentence: 12
+    approximate: true
+    delim: [".", "?", "!", "。", "？", "！", "\n"]
+    include_delim: prev
+
+atom:
+  ent_threshold: 0.91
+  rel_threshold: 0.95
+  entity_name_weight: 0.8
+  entity_label_weight: 0.2
+  max_workers: 8
+  matching:
+    require_same_entity_label: true
+    rename_relationship_by_embedding: true
+
+output:
+  language: zh
+  entity_name_mode: source
+  relation_name_mode: source
+  # Neo4j 关系类型建议使用 ASCII；中文谓词写入关系属性 predicate
+  neo4j_relationship_type: REL
+
+logging:
+  level: INFO
+
+batch_processing:
+  sleep_time: 5
+  langchain_output_parser:
+    sleep_between_batches: 0
+    max_concurrency: 20
+    max_tokens_per_batch: 131072
+    max_elements_per_batch: 20
+
+server:
+  title: "kg-gen-server"
+  version: "0.1.0"
+  cors_allow_origins: ["*"]

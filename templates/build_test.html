@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>kg-gen-server 测试页</title>
+    <style>
+      :root { --bg:#f8fafc; --card:#ffffff; --muted:#475569; --text:#0f172a; --border:#e2e8f0; --primary:#2563eb; --danger:#dc2626; --field:#f1f5f9; }
+      body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
+      a { color: var(--primary); }
+      .wrap { display:flex; height:100vh; gap:12px; padding:12px; box-sizing:border-box; justify-content:center; }
+      .panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-sizing:border-box; overflow:auto; }
+      .left { width: min(920px, 100%); min-width: 360px; }
+      .row { display:flex; gap:10px; }
+      .row > * { flex:1; }
+      label { display:block; font-size: 12px; color: var(--muted); margin: 10px 0 6px; }
+      input, textarea, select { width:100%; box-sizing:border-box; background:var(--field); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:10px; outline:none; }
+      textarea { min-height: 220px; resize: vertical; }
+      .btn { cursor:pointer; border:1px solid var(--border); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; }
+      .btn:hover { background: var(--field); }
+      .btn.primary { border-color: rgba(37,99,235,.55); background: rgba(37,99,235,.12); }
+      .btn.danger { border-color: rgba(220,38,38,.55); background: rgba(220,38,38,.10); }
+      .btn:disabled { opacity: .6; cursor:not-allowed; }
+      .small { font-size: 12px; color: var(--muted); }
+      .status { white-space: pre-wrap; background:var(--field); border:1px solid var(--border); border-radius:10px; padding:10px; min-height: 78px; }
+      .topbar { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+      .pill { font-size:12px; color: var(--muted); }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      @media (max-width: 1100px) {
+        .wrap { flex-direction: column; }
+        .left { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="panel left">
+        <div class="topbar">
+          <div>
+            <div style="font-weight:700;">kg-gen-server 测试页</div>
+            <div class="pill mono">POST /api/graph/build</div>
+          </div>
+          <button class="btn" id="btnReload">刷新图谱列表</button>
+        </div>
+
+        <label>图谱选择</label>
+        <div class="row">
+          <select id="graphSelect"></select>
+          <button class="btn danger" id="btnDelete">删除</button>
+          <button class="btn" id="btnRename">重命名</button>
+        </div>
+        <div class="small" id="graphStats"></div>
+
+        <hr style="border:0; border-top:1px solid var(--border); margin:14px 0;" />
+
+        <label>graph_name（必填）</label>
+        <input id="graphName" placeholder="例如: demo_graph" />
+
+        <div class="row">
+          <div>
+            <label>doc_id（必填）</label>
+            <input id="docId" placeholder="例如: doc-001" />
+          </div>
+          <div>
+            <label>doc_name（必填）</label>
+            <input id="docName" placeholder="例如: 示例文档" />
+          </div>
+        </div>
+
+        <label>new_graph_name（可选，不允许覆盖同名）</label>
+        <input id="newGraphName" placeholder="例如: merged_graph" />
+
+        <label>doc_content（Markdown，必填）</label>
+        <textarea id="docContent" placeholder="在这里粘贴 Markdown 文本..."></textarea>
+
+        <div class="row" style="margin-top:12px;">
+          <button class="btn primary" id="btnBuild">构建/合并图谱</button>
+          <button class="btn" id="btnPreview">预览当前选择</button>
+        </div>
+
+        <label>状态</label>
+        <div class="status mono" id="statusBox"></div>
+        <div class="small">
+          预览页面：<a class="mono" id="previewUrlLink" target="_blank" rel="noopener"></a>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const el = (id) => document.getElementById(id);
+      const statusBox = el("statusBox");
+      const graphSelect = el("graphSelect");
+      const previewUrlLink = el("previewUrlLink");
+      const graphStats = el("graphStats");
+
+      function setStatus(msg) {
+        statusBox.textContent = msg || "";
+      }
+
+      function currentGraphName() {
+        const v = graphSelect.value || "";
+        return v.trim();
+      }
+
+      function previewUrl(name) {
+        return name ? `/api/graphs/${encodeURIComponent(name)}/visualize` : "";
+      }
+
+      async function apiJson(url, options) {
+        const res = await fetch(url, options);
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (_) {}
+        if (!res.ok) {
+          const detail = (data && (data.detail || data.message)) ? (data.detail || data.message) : text;
+          throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+        }
+        return data;
+      }
+
+      async function loadGraphs() {
+        setStatus("加载图谱列表中...");
+        const data = await apiJson("/api/graphs");
+        const graphs = (data && data.graphs) ? data.graphs : [];
+        graphSelect.innerHTML = "";
+        const opt0 = document.createElement("option");
+        opt0.value = "";
+        opt0.textContent = "-- 请选择图谱 --";
+        graphSelect.appendChild(opt0);
+        for (const g of graphs) {
+          const opt = document.createElement("option");
+          opt.value = g.graph_name;
+          opt.textContent = `${g.graph_name}  (N:${g.node_count}, R:${g.relationship_count})`;
+          graphSelect.appendChild(opt);
+        }
+        setStatus(`已加载 ${graphs.length} 个图谱`);
+        graphStats.textContent = "";
+      }
+
+      async function refreshStats(name) {
+        if (!name) { graphStats.textContent = ""; return; }
+        const s = await apiJson(`/api/graphs/${encodeURIComponent(name)}/stats`);
+        graphStats.textContent = `统计：节点 ${s.node_count}，关系 ${s.relationship_count}`;
+      }
+
+      function setPreview(name) {
+        const url = previewUrl(name);
+        previewUrlLink.textContent = url || "";
+        previewUrlLink.href = url || "";
+        previewUrlLink.style.pointerEvents = url ? "auto" : "none";
+      }
+
+      el("btnReload").addEventListener("click", async () => {
+        try { await loadGraphs(); } catch (e) { setStatus(String(e)); }
+      });
+
+      graphSelect.addEventListener("change", async () => {
+        const name = currentGraphName();
+        setPreview(name);
+        try { await refreshStats(name); } catch (e) { setStatus(String(e)); }
+      });
+
+      el("btnPreview").addEventListener("click", async () => {
+        const name = currentGraphName();
+        if (!name) { setStatus("请先选择一个图谱"); return; }
+        const url = previewUrl(name);
+        if (!url) { setStatus("预览 URL 为空"); return; }
+        window.open(url, "_blank", "noopener");
+        try { await refreshStats(name); } catch (e) { setStatus(String(e)); }
+      });
+
+      el("btnDelete").addEventListener("click", async () => {
+        const name = currentGraphName();
+        if (!name) { setStatus("请先选择一个图谱"); return; }
+        if (!confirm(`确认删除图谱 "${name}"？该操作不可恢复。`)) return;
+        try {
+          setStatus("删除中...");
+          const r = await apiJson(`/api/graphs/${encodeURIComponent(name)}`, { method: "DELETE" });
+          setStatus(`删除成功：节点 ${r.deleted_nodes}，关系 ${r.deleted_relationships}`);
+          await loadGraphs();
+          setPreview("");
+        } catch (e) { setStatus(String(e)); }
+      });
+
+      el("btnRename").addEventListener("click", async () => {
+        const name = currentGraphName();
+        if (!name) { setStatus("请先选择一个图谱"); return; }
+        const newName = prompt(`将 "${name}" 重命名为：`, `${name}_renamed`);
+        if (!newName || !newName.trim()) return;
+        try {
+          setStatus("重命名中...");
+          const r = await apiJson(`/api/graphs/${encodeURIComponent(name)}/rename`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ new_name: newName.trim() }),
+          });
+          setStatus(`重命名成功：${r.old_name} -> ${r.new_name}（节点 ${r.updated_nodes}，关系 ${r.updated_relationships}）`);
+          await loadGraphs();
+          graphSelect.value = newName.trim();
+          setPreview(newName.trim());
+          await refreshStats(newName.trim());
+        } catch (e) { setStatus(String(e)); }
+      });
+
+      el("btnBuild").addEventListener("click", async () => {
+        const graphName = el("graphName").value.trim();
+        const docId = el("docId").value.trim();
+        const docName = el("docName").value.trim();
+        const docContent = el("docContent").value;
+        const newGraphName = el("newGraphName").value.trim();
+
+        if (!graphName || !docId || !docName || !docContent.trim()) {
+          setStatus("请填写 graph_name / doc_id / doc_name / doc_content");
+          return;
+        }
+
+        const body = { graph_name: graphName, doc_id: docId, doc_name: docName, doc_content: docContent };
+        if (newGraphName) body.new_graph_name = newGraphName;
+
+        try {
+          el("btnBuild").disabled = true;
+          setStatus("构建中（可能需要较长时间）...");
+          const r = await apiJson("/api/graph/build", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          setStatus(`构建成功：graph=${r.graph_name}，实体=${r.entities}，关系=${r.relationships}，facts=${r.atomic_facts}`);
+          await loadGraphs();
+          graphSelect.value = r.graph_name;
+          setPreview(r.graph_name);
+          await refreshStats(r.graph_name);
+        } catch (e) {
+          setStatus(String(e));
+        } finally {
+          el("btnBuild").disabled = false;
+        }
+      });
+
+      (async () => {
+        try { await loadGraphs(); } catch (e) { setStatus(String(e)); }
+      })();
+    </script>
+  </body>
+</html>
