@@ -1034,26 +1034,88 @@ def _load_graph_view_filtered(storage: Neo4jStorage, graph_name: str, filters: G
                 entities.add(str(name))
         entities.add(filters.center)
     else:
-        rel_query = (
-            f'MATCH (s {{graph_name: "{escaped_graph_name}"}})-[r {{graph_name: "{escaped_graph_name}"}}]->'
-            f'(o {{graph_name: "{escaped_graph_name}"}}) '
-            f'WHERE 1=1{doc_id_clause_rel}{predicates_clause_rel}{entities_clause_rel}{q_clause_rel} '
-            "RETURN DISTINCT s.name AS subject, r.predicate AS predicate, o.name AS object "
-            f"LIMIT {int(filters.limit_edges)}"
-        )
-        for record in storage.run_query_with_result(rel_query):
-            _add_relation(record.get("subject"), record.get("predicate"), record.get("object"))
+        depth = max(0, int(filters.depth))
+        # If depth > 0 and we have a search query, expand from matching nodes
+        if depth > 0 and filters.q:
+            # First, find matching nodes
+            matching_nodes_query = (
+                f'MATCH (n {{graph_name: "{escaped_graph_name}"}}) '
+                f'WHERE 1=1{doc_id_clause_node}{entities_clause_node}{q_clause_node} '
+                "RETURN DISTINCT n.name AS name "
+                f"LIMIT {int(filters.limit_nodes)}"
+            )
+            matching_entities = set()
+            for record in storage.run_query_with_result(matching_nodes_query):
+                name = record.get("name")
+                if name:
+                    matching_entities.add(str(name))
+            
+            if matching_entities:
+                # Expand from matching nodes using depth
+                matching_list = _cypher_str_list(list(matching_entities))
+                # Get relationships within depth
+                if depth > 0:
+                    rel_query = (
+                        f'MATCH (m {{graph_name: "{escaped_graph_name}"}}) '
+                        f'WHERE m.name IN {matching_list} '
+                        f'MATCH p=(m)-[*1..{depth}]-(n) '
+                        f'WHERE ALL(node IN nodes(p) WHERE node.graph_name = "{escaped_graph_name}") '
+                        f'AND ALL(rel IN relationships(p) WHERE rel.graph_name = "{escaped_graph_name}"'
+                        f"{doc_id_clause_path_rel}{predicates_clause_path_rel}"
+                        ") "
+                        "WITH DISTINCT relationships(p) AS rels "
+                        "UNWIND rels AS r "
+                        "WITH DISTINCT r "
+                        "MATCH (s)-[r]->(o) "
+                        f'WHERE s.graph_name = "{escaped_graph_name}" AND o.graph_name = "{escaped_graph_name}"'
+                        f"{entities_clause_rel}"
+                        " RETURN DISTINCT s.name AS subject, r.predicate AS predicate, o.name AS object "
+                        f"LIMIT {int(filters.limit_edges)}"
+                    )
+                    for record in storage.run_query_with_result(rel_query):
+                        _add_relation(record.get("subject"), record.get("predicate"), record.get("object"))
+                
+                # Get all nodes within depth
+                node_query = (
+                    f'MATCH (m {{graph_name: "{escaped_graph_name}"}}) '
+                    f'WHERE m.name IN {matching_list} '
+                    f'MATCH p=(m)-[*0..{depth}]-(n) '
+                    f'WHERE ALL(node IN nodes(p) WHERE node.graph_name = "{escaped_graph_name}") '
+                    f'AND ALL(rel IN relationships(p) WHERE rel.graph_name = "{escaped_graph_name}"'
+                    f"{doc_id_clause_path_rel}{predicates_clause_path_rel}"
+                    ") "
+                    "WITH DISTINCT n "
+                    f'WHERE n.graph_name = "{escaped_graph_name}"'
+                    f"{doc_id_clause_node}{entities_clause_node}"
+                    " RETURN DISTINCT n.name AS name "
+                    f"LIMIT {int(filters.limit_nodes)}"
+                )
+                for record in storage.run_query_with_result(node_query):
+                    name = record.get("name")
+                    if name:
+                        entities.add(str(name))
+        else:
+            # Original behavior: direct query without depth expansion
+            rel_query = (
+                f'MATCH (s {{graph_name: "{escaped_graph_name}"}})-[r {{graph_name: "{escaped_graph_name}"}}]->'
+                f'(o {{graph_name: "{escaped_graph_name}"}}) '
+                f'WHERE 1=1{doc_id_clause_rel}{predicates_clause_rel}{entities_clause_rel}{q_clause_rel} '
+                "RETURN DISTINCT s.name AS subject, r.predicate AS predicate, o.name AS object "
+                f"LIMIT {int(filters.limit_edges)}"
+            )
+            for record in storage.run_query_with_result(rel_query):
+                _add_relation(record.get("subject"), record.get("predicate"), record.get("object"))
 
-        node_query = (
-            f'MATCH (n {{graph_name: "{escaped_graph_name}"}}) '
-            f'WHERE 1=1{doc_id_clause_node}{entities_clause_node}{q_clause_node} '
-            "RETURN DISTINCT n.name AS name "
-            f"LIMIT {int(filters.limit_nodes)}"
-        )
-        for record in storage.run_query_with_result(node_query):
-            name = record.get("name")
-            if name:
-                entities.add(str(name))
+            node_query = (
+                f'MATCH (n {{graph_name: "{escaped_graph_name}"}}) '
+                f'WHERE 1=1{doc_id_clause_node}{entities_clause_node}{q_clause_node} '
+                "RETURN DISTINCT n.name AS name "
+                f"LIMIT {int(filters.limit_nodes)}"
+            )
+            for record in storage.run_query_with_result(node_query):
+                name = record.get("name")
+                if name:
+                    entities.add(str(name))
 
     return GraphView(entities=set(str(e) for e in entities if e), relations=relations)
 

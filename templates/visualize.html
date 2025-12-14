@@ -259,6 +259,36 @@
             text-align: right;
         }
 
+        .server-search .depth-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 8px;
+            border-left: 1px solid #e2e8f0;
+        }
+
+        .server-search .depth-control label {
+            font-size: 0.85rem;
+            color: #475569;
+            white-space: nowrap;
+        }
+
+        .server-search .depth-control input[type="number"] {
+            width: 60px;
+            padding: 6px 8px;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            text-align: center;
+            background: rgba(248, 250, 252, 0.9);
+        }
+
+        .server-search .depth-control input[type="number"]:focus {
+            outline: none;
+            border-color: #1d4ed8;
+            background: #ffffff;
+        }
+
         .tab-bar {
             display: flex;
             gap: 8px;
@@ -487,6 +517,20 @@
 
             .server-search {
                 padding: 10px 10px;
+                flex-wrap: wrap;
+            }
+
+            .server-search .depth-control {
+                width: 100%;
+                border-left: none;
+                border-top: 1px solid #e2e8f0;
+                padding: 8px 0 0;
+                margin-top: 8px;
+            }
+
+            .server-search .status {
+                min-width: auto;
+                flex: 1;
             }
         }
     </style>
@@ -525,6 +569,10 @@
                         <div class="search-wrapper">
                             <input id="searchInput" type="text" placeholder="搜索（输入检索关键字）" />
                             <button id="clearSearchButton" class="clear-button" title="清空搜索"></button>
+                        </div>
+                        <div class="depth-control">
+                            <label for="depthInput">深度:</label>
+                            <input id="depthInput" type="number" min="0" max="6" value="1" title="搜索结果扩展深度（0=仅匹配节点，1=1层邻居，以此类推）" />
                         </div>
                         <div class="status" id="serverSearchStatus">就绪</div>
                     </div>
@@ -580,6 +628,7 @@
                 activeElement: null,
                 focusPredicate: null,
                 searchTerm: '',
+                searchDepth: 1,
                 sidebarCollapsed: false,
                 sidebarDisabled: false
             };
@@ -1449,6 +1498,25 @@
                 return basePath + (qs ? `?${qs}` : '');
             }
 
+            function getSearchParams(searchTerm, depth) {
+                const params = new URLSearchParams(window.location.search);
+                // 保留非搜索相关的参数
+                const preserveParams = ['graph_name'];
+                const newParams = new URLSearchParams();
+                preserveParams.forEach(key => {
+                    const value = params.get(key);
+                    if (value) newParams.set(key, value);
+                });
+                
+                if (searchTerm && String(searchTerm).trim() !== '') {
+                    newParams.set('q', String(searchTerm).trim());
+                }
+                if (depth !== undefined && depth !== null) {
+                    newParams.set('depth', String(depth));
+                }
+                return newParams;
+            }
+
             function applyVizData(newData, searchTerm) {
                 vizData = newData || { nodes: [], edges: [], stats: {}, relations: [] };
                 rebuildIndexes();
@@ -1552,19 +1620,15 @@
                 updateHighlights();
             }
 
-            async function fetchVizData(searchTerm) {
+            async function fetchVizData(searchTerm, depth) {
                 const seq = ++serverSearchSeq;
                 if (serverSearchAbortController) {
                     serverSearchAbortController.abort();
                 }
                 serverSearchAbortController = new AbortController();
 
-                const params = new URLSearchParams(window.location.search);
-                if (searchTerm && String(searchTerm).trim() !== '') {
-                    params.set('q', String(searchTerm).trim());
-                } else {
-                    params.delete('q');
-                }
+                const depthValue = depth !== undefined && depth !== null ? depth : state.searchDepth;
+                const params = getSearchParams(searchTerm, depthValue);
 
                 const nextQuery = params.toString();
                 const nextUrl = window.location.pathname + (nextQuery ? `?${nextQuery}` : '');
@@ -1622,6 +1686,45 @@
 
                 const searchInput = document.getElementById('searchInput');
                 const clearButton = document.getElementById('clearSearchButton');
+                const depthInput = document.getElementById('depthInput');
+
+                // Initialize depth from URL or use default
+                const initialDepth = new URLSearchParams(window.location.search).get('depth');
+                if (initialDepth !== null) {
+                    const depthValue = parseInt(initialDepth, 10);
+                    if (!isNaN(depthValue) && depthValue >= 0 && depthValue <= 6) {
+                        state.searchDepth = depthValue;
+                        if (depthInput) {
+                            depthInput.value = depthValue;
+                        }
+                    }
+                }
+
+                // Depth input change handler
+                if (depthInput) {
+                    depthInput.addEventListener('change', () => {
+                        const depthValue = parseInt(depthInput.value, 10);
+                        if (!isNaN(depthValue) && depthValue >= 0 && depthValue <= 6) {
+                            state.searchDepth = depthValue;
+                            // If there's a search term, re-fetch with new depth
+                            if (state.searchTerm && state.searchTerm.trim()) {
+                                fetchVizData(state.searchTerm, depthValue);
+                            }
+                        } else {
+                            // Reset to valid value
+                            depthInput.value = state.searchDepth;
+                        }
+                    });
+                    depthInput.addEventListener('input', () => {
+                        // Validate on input
+                        const depthValue = parseInt(depthInput.value, 10);
+                        if (isNaN(depthValue) || depthValue < 0) {
+                            depthInput.value = 0;
+                        } else if (depthValue > 6) {
+                            depthInput.value = 6;
+                        }
+                    });
+                }
 
                 // Clear button click handler
                 if (clearButton) {
@@ -1630,7 +1733,7 @@
                         state.searchTerm = '';
                         updateClearButtonVisibility();
                         updateHighlights();
-                        fetchVizData('');
+                        fetchVizData('', state.searchDepth);
                     });
                 }
 
@@ -1658,7 +1761,7 @@
                         clearTimeout(serverSearchDebounceTimer);
                     }
                     serverSearchDebounceTimer = setTimeout(() => {
-                        fetchVizData(state.searchTerm);
+                        fetchVizData(state.searchTerm, state.searchDepth);
                     }, 300);
                 });
                 searchInput.addEventListener('keydown', event => {
@@ -1667,9 +1770,9 @@
                         state.searchTerm = '';
                         updateClearButtonVisibility();
                         updateHighlights();
-                        fetchVizData('');
+                        fetchVizData('', state.searchDepth);
                     } else if (event.key === 'Enter') {
-                        fetchVizData(state.searchTerm);
+                        fetchVizData(state.searchTerm, state.searchDepth);
                     }
                 });
 
