@@ -659,7 +659,7 @@ def _sorted_ignore_case(items) -> List[str]:
     return sorted(items, key=lambda value: str(value).lower())
 
 
-def _build_view_model(graph: GraphView) -> Dict[str, Any]:
+def _build_view_model(graph: GraphView, storage: Optional[Neo4jStorage] = None, graph_name: Optional[str] = None) -> Dict[str, Any]:
     all_entities = set(graph.entities)
     for subject, _, obj in graph.relations:
         all_entities.add(subject)
@@ -734,6 +734,25 @@ def _build_view_model(graph: GraphView) -> Dict[str, Any]:
     node_neighbors: Dict[str, set[str]] = defaultdict(set)
     node_edges: Dict[str, Dict[str, List[str]]] = defaultdict(lambda: {"incoming": [], "outgoing": []})
 
+    # 获取边的 doc_id 信息
+    edge_doc_ids: Dict[Tuple[str, str, str], List[str]] = {}
+    if storage and graph_name:
+        escaped_graph_name = Neo4jStorage.format_value(graph_name)
+        # 批量查询所有关系的 doc_id
+        rel_query = (
+            f'MATCH (s {{graph_name: "{escaped_graph_name}"}})-[r {{graph_name: "{escaped_graph_name}"}}]->'
+            f'(o {{graph_name: "{escaped_graph_name}"}}) '
+            "RETURN s.name AS subject, r.predicate AS predicate, o.name AS object, COALESCE(r.doc_id, []) AS doc_id"
+        )
+        for record in storage.run_query_with_result(rel_query):
+            subject = record.get("subject")
+            predicate = record.get("predicate")
+            obj = record.get("object")
+            doc_ids = record.get("doc_id") or []
+            if subject and predicate and obj and isinstance(doc_ids, list):
+                key = (str(subject), str(predicate), str(obj))
+                edge_doc_ids[key] = [str(d) for d in doc_ids if str(d).strip()]
+
     edges_view: List[Dict[str, Any]] = []
     for index, (subject, predicate, obj) in enumerate(relations):
         predicate_counts[predicate] += 1
@@ -752,6 +771,7 @@ def _build_view_model(graph: GraphView) -> Dict[str, Any]:
             color = _string_to_color(f"predicate::{predicate}")
             edge_color_lookup[predicate] = color
 
+        key = (subject, predicate, obj)
         edges_view.append(
             {
                 "id": edge_id,
@@ -761,6 +781,7 @@ def _build_view_model(graph: GraphView) -> Dict[str, Any]:
                 "cluster": edge_member_to_cluster.get(predicate),
                 "color": color,
                 "tooltip": f"{subject} —{predicate}→ {obj}",
+                "doc_id": edge_doc_ids.get(key, []),
             }
         )
 
@@ -790,6 +811,23 @@ def _build_view_model(graph: GraphView) -> Dict[str, Any]:
     components = connected_components()
     isolated_entities = [entity for entity in entities if degree[entity] == 0]
 
+    # 获取节点的 doc_id 信息
+    node_doc_ids: Dict[str, List[str]] = {}
+    if storage and graph_name:
+        escaped_graph_name = Neo4jStorage.format_value(graph_name)
+        entity_list = _cypher_str_list(list(entities))
+        if entity_list:
+            node_query = (
+                f'MATCH (n {{graph_name: "{escaped_graph_name}"}}) '
+                f'WHERE n.name IN {entity_list} '
+                "RETURN n.name AS name, COALESCE(n.doc_id, []) AS doc_id"
+            )
+            for record in storage.run_query_with_result(node_query):
+                name = record.get("name")
+                doc_ids = record.get("doc_id") or []
+                if name and isinstance(doc_ids, list):
+                    node_doc_ids[str(name)] = [str(d) for d in doc_ids if str(d).strip()]
+
     nodes_view: List[Dict[str, Any]] = []
     for entity in entities:
         cluster_id = entity_member_to_cluster.get(entity)
@@ -807,6 +845,7 @@ def _build_view_model(graph: GraphView) -> Dict[str, Any]:
                 "radius": radius,
                 "neighbors": _sorted_ignore_case(node_neighbors.get(entity, set())),
                 "edgeIds": node_edges.get(entity, {"incoming": [], "outgoing": []}),
+                "doc_id": node_doc_ids.get(entity, []),
             }
         )
 
@@ -1113,7 +1152,7 @@ def _get_visualize_view_model(
     else:
         graph = _load_graph_view(resources.storage, graph_name)
 
-    return _build_view_model(graph), has_filters
+    return _build_view_model(graph, resources.storage, graph_name), has_filters
 
 
 def _get_config_path() -> Path:

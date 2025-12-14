@@ -523,7 +523,7 @@
                 <div class="network-panel">
                     <div class="server-search">
                         <div class="search-wrapper">
-                            <input id="searchInput" type="text" placeholder="搜索（服务端过滤，按 Enter 或停顿自动生效）" />
+                            <input id="searchInput" type="text" placeholder="搜索（输入检索关键字）" />
                             <button id="clearSearchButton" class="clear-button" title="清空搜索"></button>
                         </div>
                         <div class="status" id="serverSearchStatus">就绪</div>
@@ -773,6 +773,8 @@
                 if (active.type === 'node') {
                     const node = nodeById[active.id];
                     const neighbors = node.neighbors.length ? node.neighbors.join(', ') : '无';
+                    const docIds = node.doc_id || [];
+                    const docIdsDisplay = docIds.length ? docIds.join(', ') : '无';
                     panel.innerHTML = `
                         <h3>${node.label}</h3>
                         <ul>
@@ -780,14 +782,18 @@
                             <li>出度：${node.outdegree}</li>
                             <li>入度：${node.indegree}</li>
                             <li>邻居：${neighbors}</li>
+                            <li>文档ID：${docIdsDisplay}</li>
                         </ul>
                     `;
                 } else if (active.type === 'edge') {
                     const edge = edgeById[active.id];
+                    const docIds = edge.doc_id || [];
+                    const docIdsDisplay = docIds.length ? docIds.join(', ') : '无';
                     panel.innerHTML = `
                         <h3>${edge.source} → ${edge.target}</h3>
                         <ul>
                             <li>关系：${edge.predicate}</li>
+                            <li>文档ID：${docIdsDisplay}</li>
                         </ul>
                     `;
                 }
